@@ -45,7 +45,7 @@ export function FireCanvas({ fireState, onFrame, className }: Props) {
       const logicalW = canvas.offsetWidth
       const logicalH = canvas.offsetHeight
 
-      engine.update(dt, stateRef.current)
+      engine.update(dt, stateRef.current, logicalW, logicalH)
       engine.draw(ctx, logicalW, logicalH)
 
       onFrame?.(stateRef.current)

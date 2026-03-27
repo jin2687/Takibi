@@ -1,36 +1,63 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { FireCanvas } from './fire/FireCanvas'
-import type { FireState } from './fire/FireEngine'
+import type { FireState, LogState } from './fire/FireEngine'
 import { usePeer } from './p2p/usePeer'
 import { generateRoomId, getRoomIdFromUrl, buildInviteUrl } from './p2p/roomId'
 import { InviteModal } from './components/InviteModal'
 import './App.css'
 
-// ホスト側パラメータ
 const BROADCAST_INTERVAL = 100  // ms
-const DECAY_RATE = 0.04          // 毎秒火力が落ちる量
-const LOG_BOOST = 0.25           // 薪1本あたりの火力増加量
+const LOG_LIFETIME = 180         // seconds per log
+const COOLDOWN_MS = 60_000       // 1 minute cooldown
+
+function createLog(existingLogs: LogState[]): LogState {
+  const activeLogs = existingLogs.filter(l => l.age < 0.85)
+  const pileLevel = activeLogs.length
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    relX: (Math.random() - 0.5) * 0.12,
+    relY: 0.006 + pileLevel * 0.024,
+    angle: (Math.random() - 0.5) * 0.5,
+    age: 0,
+    lifetime: LOG_LIFETIME,
+  }
+}
 
 function App() {
   const roomIdFromUrl = getRoomIdFromUrl()
   const isHost = roomIdFromUrl === null
-
-  // ホストが持つルームID（ゲストは roomIdFromUrl を使う）
   const [hostRoomId] = useState(() => isHost ? generateRoomId() : null)
   const roomId = isHost ? hostRoomId : roomIdFromUrl
 
-  // 焚き火状態（ホストのみ書き換える。ゲストはホストから受信）
-  const [fireState, setFireState] = useState<FireState>({ intensity: 0.3, elapsed: 0 })
+  const [fireState, setFireState] = useState<FireState>({
+    intensity: 0.1,
+    elapsed: 0,
+    logs: [],
+  })
   const fireStateRef = useRef<FireState>(fireState)
 
   const [showInvite, setShowInvite] = useState(false)
   const [logAnimation, setLogAnimation] = useState(false)
+  const [cooldownEnd, setCooldownEnd] = useState(0)
+  const [cooldownRemaining, setCooldownRemaining] = useState(0)
 
-  // ゲストがアクションを受け取ったときの処理
+  // Update cooldown countdown every 100ms
+  useEffect(() => {
+    const id = setInterval(() => {
+      setCooldownRemaining(Math.max(0, Math.ceil((cooldownEnd - Date.now()) / 1000)))
+    }, 100)
+    return () => clearInterval(id)
+  }, [cooldownEnd])
+
+  const triggerLogAnimation = () => {
+    setLogAnimation(true)
+    setTimeout(() => setLogAnimation(false), 600)
+  }
+
   const handleGuestAction = useCallback(() => {
-    // 薪追加
     setFireState((prev) => {
-      const next = { ...prev, intensity: Math.min(1, prev.intensity + LOG_BOOST) }
+      const newLog = createLog(prev.logs)
+      const next = { ...prev, logs: [...prev.logs, newLog] }
       fireStateRef.current = next
       return next
     })
@@ -39,14 +66,14 @@ function App() {
 
   const { role, peerId, guestCount, error, broadcastState, sendAction } = usePeer({
     roomId: isHost ? null : roomId,
-    onStateUpdate: isHost ? undefined : setFireState,
+    onStateUpdate: isHost ? undefined : (state) =>
+      setFireState({ ...state, logs: state.logs ?? [] }),
     onGuestAction: isHost ? handleGuestAction : undefined,
   })
 
-  // ホスト: 時間経過で火力を減衰し、定期的にゲストへ配信
+  // Host loop: age logs + derive intensity + broadcast
   useEffect(() => {
     if (!isHost) return
-
     let lastBroadcast = 0
     let animId: number
     let lastTime = performance.now()
@@ -56,9 +83,19 @@ function App() {
       lastTime = now
 
       setFireState((prev) => {
+        const updatedLogs = prev.logs
+          .map(log => ({ ...log, age: Math.min(1, log.age + dt / log.lifetime) }))
+          .filter(log => log.age < 1)
+
+        const target = 0.05 + updatedLogs.reduce((sum, log) => {
+          return sum + Math.max(0, 1 - log.age * 1.4) * 0.32
+        }, 0)
+        const newIntensity = prev.intensity + (Math.max(0.05, Math.min(1, target)) - prev.intensity) * 0.04
+
         const next: FireState = {
-          intensity: Math.max(0.05, prev.intensity - DECAY_RATE * dt),
+          intensity: newIntensity,
           elapsed: prev.elapsed + dt,
+          logs: updatedLogs,
         }
         fireStateRef.current = next
         return next
@@ -68,7 +105,6 @@ function App() {
         broadcastState(fireStateRef.current)
         lastBroadcast = now
       }
-
       animId = requestAnimationFrame(loop)
     }
 
@@ -76,74 +112,77 @@ function App() {
     return () => cancelAnimationFrame(animId)
   }, [isHost, broadcastState])
 
-  const triggerLogAnimation = () => {
-    setLogAnimation(true)
-    setTimeout(() => setLogAnimation(false), 600)
-  }
-
   const handleAddLog = useCallback(() => {
+    if (Date.now() < cooldownEnd) return
+    setCooldownEnd(Date.now() + COOLDOWN_MS)
+
     if (isHost) {
       setFireState((prev) => {
-        const next = { ...prev, intensity: Math.min(1, prev.intensity + LOG_BOOST) }
+        const newLog = createLog(prev.logs)
+        const next = { ...prev, logs: [...prev.logs, newLog] }
         fireStateRef.current = next
         return next
       })
-      triggerLogAnimation()
     } else {
       sendAction({ type: 'addLog' })
-      triggerLogAnimation()
     }
-  }, [isHost, sendAction])
+    triggerLogAnimation()
+  }, [isHost, sendAction, cooldownEnd])
 
   const inviteUrl = roomId ? buildInviteUrl(isHost ? hostRoomId! : roomId) : ''
 
   const statusLabel = () => {
     if (error) return `エラー: ${error}`
     if (!peerId) return '接続中…'
-    if (role === 'host') {
-      return guestCount > 0 ? `${guestCount}人が参加中` : '一人でたきび中'
-    }
+    if (role === 'host') return guestCount > 0 ? `${guestCount}人が参加中` : '一人でたきび中'
     return guestCount > 0 ? 'ホストと接続済み' : 'ホストを探しています…'
   }
 
+  const logCount = fireState.logs.filter(l => l.age < 0.9).length
+
   return (
     <div className="app">
-      {/* 上部：焚き火Canvas領域 */}
       <div className="canvas-area">
         <FireCanvas fireState={fireState} className="fire-canvas" />
         <div className="room-status">
           <span className="room-badge">{statusLabel()}</span>
         </div>
-        {/* 薪追加時のフラッシュ */}
+        {logCount > 0 && (
+          <div className="log-count-badge">🪵 ×{logCount}</div>
+        )}
         {logAnimation && <div className="log-flash" />}
       </div>
 
-      {/* 下部：アクション領域 */}
       <div className="action-area">
         <div className="action-title">みんなでたきび</div>
+
         <button
-          className={`btn-log${logAnimation ? ' btn-log--active' : ''}`}
+          className={[
+            'btn-log',
+            logAnimation ? 'btn-log--active' : '',
+            cooldownRemaining > 0 ? 'btn-log--cooldown' : '',
+          ].filter(Boolean).join(' ')}
+          style={cooldownRemaining > 0
+            ? { '--cd-progress': `${((COOLDOWN_MS - cooldownRemaining * 1000) / COOLDOWN_MS * 100).toFixed(1)}%` } as React.CSSProperties
+            : undefined}
           onClick={handleAddLog}
-          disabled={!peerId}
+          disabled={!peerId || cooldownRemaining > 0}
         >
-          薪をくべる 🪵
+          {cooldownRemaining > 0
+            ? `くべる準備中… ${cooldownRemaining}秒`
+            : '薪をくべる 🪵'}
         </button>
+
         <div className="action-sub">
           {isHost && (
-            <button
-              className="btn-invite"
-              onClick={() => setShowInvite(true)}
-              disabled={!peerId}
-            >
+            <button className="btn-invite" onClick={() => setShowInvite(true)} disabled={!peerId}>
               招待URLを表示 📋
             </button>
           )}
         </div>
+
         <div className="intensity-bar-wrap">
-          <div
-            className="intensity-bar"
-            style={{ width: `${fireState.intensity * 100}%` }}
-          />
+          <div className="intensity-bar" style={{ width: `${fireState.intensity * 100}%` }} />
         </div>
       </div>
 

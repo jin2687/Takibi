@@ -29,6 +29,18 @@
   right: 12px;
 }
 
+.log-count-badge {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 13px;
+  background: rgba(200, 100, 20, 0.25);
+  color: #f5e6c8;
+  backdrop-filter: blur(4px);
+}
+
 .room-badge {
   display: inline-block;
   padding: 4px 10px;
@@ -95,8 +107,26 @@
 }
 
 .btn-log:disabled {
-  opacity: 0.5;
   cursor: not-allowed;
+}
+
+.btn-log--cooldown {
+  background: linear-gradient(135deg, #4a3020, #6a4018);
+  box-shadow: 0 2px 8px rgba(80, 40, 10, 0.3);
+  opacity: 0.85;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-log--cooldown::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: var(--cd-progress, 0%);
+  background: linear-gradient(90deg, #c0501a, #ffe44e);
+  transition: width 0.1s linear;
 }
 
 .action-sub {
