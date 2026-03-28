@@ -5,6 +5,7 @@ export interface LogState {
   angle: number    // radians
   age: number      // 0 = fresh → 1 = burned out
   lifetime: number // seconds
+  golden?: boolean // rare golden log
 }
 
 export interface FireState {
@@ -18,12 +19,14 @@ interface Particle {
   vx: number; vy: number
   life: number; maxLife: number
   size: number; wobble: number; wobbleFreq: number
+  golden?: boolean
 }
 
 interface FallingLog {
   currentRelY: number  // starts high (>0.86), falls to targetRelY
   vy: number           // negative = falling down (relY decreasing)
   settled: boolean
+  golden: boolean
 }
 
 const FIRE_BASE_Y = 0.86   // fire base at 86% of canvas height
@@ -42,7 +45,26 @@ export class FireEngine {
     for (const log of state.logs) {
       if (!this.seenLogIds.has(log.id)) {
         this.seenLogIds.add(log.id)
-        this.fallingLogs.set(log.id, { currentRelY: 1.15, vy: 0, settled: false })
+        this.fallingLogs.set(log.id, {
+          currentRelY: 1.15, vy: 0, settled: false, golden: !!log.golden,
+        })
+        // Golden log: immediate golden burst at top of fall (small anticipation)
+        if (log.golden) {
+          const bx = w / 2 + log.relX * w
+          const by = h * FIRE_BASE_Y - 1.15 * h
+          for (let i = 0; i < 10; i++) {
+            const a = Math.random() * Math.PI * 2
+            const sp = 20 + Math.random() * 50
+            this.particles.push({
+              x: bx, y: by,
+              vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40,
+              life: 0, maxLife: 0.3 + Math.random() * 0.4,
+              size: 2 + Math.random() * 5,
+              wobble: Math.random() * Math.PI * 2, wobbleFreq: 3 + Math.random() * 4,
+              golden: true,
+            })
+          }
+        }
       }
     }
 
@@ -57,18 +79,27 @@ export class FireEngine {
     // Physics: logs fall downward (relY decreases toward target)
     const GRAVITY = 3.0
     for (const [id, fl] of this.fallingLogs) {
+      const log = state.logs.find(l => l.id === id)
+      if (!log) continue
+
+      // Re-settle: if settled log's target moved lower, restart fall
+      if (fl.settled && fl.currentRelY > log.relY + 0.012) {
+        fl.settled = false
+        fl.vy = 0
+      }
+
       if (fl.settled) continue
       fl.vy -= GRAVITY * dt
       fl.currentRelY += fl.vy * dt
-      const log = state.logs.find(l => l.id === id)
-      if (log && fl.currentRelY <= log.relY) {
+      if (fl.currentRelY <= log.relY) {
         fl.currentRelY = log.relY
         fl.vy = 0
         fl.settled = true
         // Landing spark burst
         const bx = w / 2 + log.relX * w
         const by = h * FIRE_BASE_Y - fl.currentRelY * h
-        for (let i = 0; i < 14; i++) {
+        const count = fl.golden ? 28 : 14
+        for (let i = 0; i < count; i++) {
           const a = Math.random() * Math.PI * 2
           const sp = 40 + Math.random() * 90
           this.particles.push({
@@ -77,6 +108,7 @@ export class FireEngine {
             life: 0, maxLife: 0.15 + Math.random() * 0.35,
             size: 1.5 + Math.random() * 4,
             wobble: Math.random() * Math.PI * 2, wobbleFreq: 3 + Math.random() * 4,
+            golden: fl.golden,
           })
         }
       }
@@ -89,11 +121,11 @@ export class FireEngine {
 
     const rate = activeLogs.length === 0
       ? 20 + state.intensity * 40
-      : Math.min(160, 45 + state.intensity * 90 + activeLogs.length * 18)
+      : Math.min(200, 45 + state.intensity * 90 + activeLogs.length * 18)
 
     this.emitAccum += rate * dt
     while (this.emitAccum >= 1) {
-      if (this.particles.length < 450) {
+      if (this.particles.length < 500) {
         if (activeLogs.length === 0) {
           this.emit(fireBaseX + (Math.random() - 0.5) * w * 0.05, fireBaseY, state.intensity)
         } else {
@@ -106,7 +138,8 @@ export class FireEngine {
           this.emit(
             lx + (Math.random() - 0.5) * logW * 0.85,
             ly + (Math.random() - 0.5) * h * 0.012,
-            Math.max(0.1, (1 - log.age) * state.intensity)
+            Math.max(0.1, (1 - log.age) * state.intensity),
+            !!log.golden,
           )
         }
       }
@@ -125,7 +158,7 @@ export class FireEngine {
     }
   }
 
-  private emit(x: number, y: number, intensity: number) {
+  private emit(x: number, y: number, intensity: number, golden = false) {
     this.particles.push({
       x, y,
       vx: (Math.random() - 0.5) * 18,
@@ -134,6 +167,7 @@ export class FireEngine {
       size: 3 + Math.random() * 13 * intensity,
       wobble: Math.random() * Math.PI * 2,
       wobbleFreq: 3 + Math.random() * 7,
+      golden,
     })
   }
 
@@ -159,7 +193,7 @@ export class FireEngine {
     for (const log of sorted) {
       const fl = this.fallingLogs.get(log.id)
       const ry = fl ? fl.currentRelY : log.relY
-      this.drawLogBody(ctx, bx + log.relX * w, by - ry * h, log.angle, w, h, log.age)
+      this.drawLogBody(ctx, bx + log.relX * w, by - ry * h, log.angle, w, h, log.age, !!log.golden)
     }
 
     // Fire particles (additive)
@@ -168,9 +202,16 @@ export class FireEngine {
     for (const p of this.particles) {
       const t = p.life
       const alpha = Math.sin(t * Math.PI) * 0.85
-      const rr = 255
-      const gg = Math.round(255 * Math.max(0, 1 - t * 1.7))
-      const bb = Math.round(170 * Math.max(0, 1 - t * 3.5))
+      let rr: number, gg: number, bb: number
+      if (p.golden) {
+        rr = 255
+        gg = Math.round(220 * Math.max(0, 1 - t * 0.9))
+        bb = Math.round(80 * Math.max(0, 1 - t * 2.5))
+      } else {
+        rr = 255
+        gg = Math.round(255 * Math.max(0, 1 - t * 1.7))
+        bb = Math.round(170 * Math.max(0, 1 - t * 3.5))
+      }
       const radius = Math.max(0.5, p.size * (1 - t * 0.45))
       const pg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius)
       pg.addColorStop(0, `rgba(${rr},${gg},${bb},${alpha.toFixed(2)})`)
@@ -190,7 +231,7 @@ export class FireEngine {
       const fl = this.fallingLogs.get(log.id)
       const ry = fl ? fl.currentRelY : log.relY
       if (fl && !fl.settled) continue
-      this.drawEmbers(ctx, bx + log.relX * w, by - ry * h, log.angle, w, h, log.age, state.elapsed)
+      this.drawEmbers(ctx, bx + log.relX * w, by - ry * h, log.angle, w, h, log.age, state.elapsed, !!log.golden)
     }
     ctx.restore()
   }
@@ -198,32 +239,53 @@ export class FireEngine {
   private drawLogBody(
     ctx: CanvasRenderingContext2D,
     cx: number, cy: number, angle: number,
-    w: number, h: number, age: number
+    w: number, h: number, age: number, golden: boolean,
   ) {
     const lw = Math.max(22, w * 0.18)
     const lh = Math.max(8, h * 0.028)
     const cr = lh * 0.48
     const t = Math.min(1, age * 1.15)
-    const r = Math.round(118 - t * 82)
-    const g = Math.round(63 - t * 48)
-    const b = Math.round(24 - t * 17)
     const opacity = age > 0.82 ? Math.max(0, 1 - (age - 0.82) / 0.18) : 1
+
+    let r: number, g: number, b: number
+    if (golden) {
+      // Gold/amber: bright gold → dark amber as it burns
+      r = Math.round(220 - t * 100)
+      g = Math.round(160 - t * 100)
+      b = Math.round(10 - t * 8)
+    } else {
+      r = Math.round(118 - t * 82)
+      g = Math.round(63 - t * 48)
+      b = Math.round(24 - t * 17)
+    }
 
     ctx.save()
     ctx.globalAlpha = opacity
     ctx.translate(cx, cy)
     ctx.rotate(angle)
 
-    // Shadow
-    ctx.shadowColor = 'rgba(0,0,0,0.55)'
-    ctx.shadowBlur = 7
+    // Golden glow aura
+    if (golden && age < 0.7) {
+      const glowA = (1 - age / 0.7) * 0.35
+      ctx.shadowColor = `rgba(255,200,0,${glowA})`
+      ctx.shadowBlur = 18
+    } else {
+      ctx.shadowColor = 'rgba(0,0,0,0.55)'
+      ctx.shadowBlur = 7
+    }
     ctx.shadowOffsetY = 4
 
     // Body gradient (lit from above)
     const bg = ctx.createLinearGradient(0, -lh / 2, 0, lh / 2)
-    bg.addColorStop(0, `rgb(${Math.min(255, r + 55)},${Math.min(255, g + 28)},${b + 16})`)
-    bg.addColorStop(0.35, `rgb(${r},${g},${b})`)
-    bg.addColorStop(1, `rgb(${Math.max(0, r - 28)},${Math.max(0, g - 14)},${Math.max(0, b - 9)})`)
+    if (golden) {
+      bg.addColorStop(0, `rgb(${Math.min(255, r + 60)},${Math.min(255, g + 40)},${Math.min(255, b + 30)})`)
+      bg.addColorStop(0.35, `rgb(${r},${g},${b})`)
+      bg.addColorStop(1, `rgb(${Math.max(0, r - 30)},${Math.max(0, g - 20)},${Math.max(0, b - 8)})`)
+    } else {
+      bg.addColorStop(0, `rgb(${Math.min(255, r + 55)},${Math.min(255, g + 28)},${b + 16})`)
+      bg.addColorStop(0.35, `rgb(${r},${g},${b})`)
+      bg.addColorStop(1, `rgb(${Math.max(0, r - 28)},${Math.max(0, g - 14)},${Math.max(0, b - 9)})`)
+    }
     ctx.beginPath()
     ctx.roundRect(-lw / 2, -lh / 2, lw, lh, cr)
     ctx.fillStyle = bg
@@ -234,7 +296,9 @@ export class FireEngine {
     ctx.shadowOffsetY = 0
 
     // End caps
-    const ec = `rgb(${Math.max(0, r - 32)},${Math.max(0, g - 16)},${Math.max(0, b - 10)})`
+    const ec = golden
+      ? `rgb(${Math.max(0, r - 20)},${Math.max(0, g - 30)},0)`
+      : `rgb(${Math.max(0, r - 32)},${Math.max(0, g - 16)},${Math.max(0, b - 10)})`
     ctx.fillStyle = ec
     ctx.beginPath()
     ctx.ellipse(-lw / 2 + cr * 0.8, 0, cr, lh / 2 - 1, 0, 0, Math.PI * 2)
@@ -243,8 +307,12 @@ export class FireEngine {
     ctx.ellipse(lw / 2 - cr * 0.8, 0, cr, lh / 2 - 1, 0, 0, Math.PI * 2)
     ctx.fill()
 
-    // Grain lines
-    ctx.strokeStyle = 'rgba(0,0,0,0.18)'
+    // Grain lines (gold shimmer lines for golden log)
+    if (golden) {
+      ctx.strokeStyle = 'rgba(255,240,100,0.25)'
+    } else {
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)'
+    }
     ctx.lineWidth = 0.8
     for (let i = -2; i <= 2; i++) {
       const lx = (i / 2.5) * lw * 0.3
@@ -260,13 +328,13 @@ export class FireEngine {
   private drawEmbers(
     ctx: CanvasRenderingContext2D,
     cx: number, cy: number, angle: number,
-    w: number, h: number, age: number, elapsed: number
+    w: number, h: number, age: number, elapsed: number, golden: boolean,
   ) {
     const lw = Math.max(22, w * 0.18)
     const lh = Math.max(8, h * 0.028)
     const burn = Math.min(1, (age - 0.1) / 0.7)
     if (burn <= 0) return
-    const count = 4 + Math.floor(burn * 7)
+    const count = golden ? 8 + Math.floor(burn * 12) : 4 + Math.floor(burn * 7)
 
     ctx.save()
     ctx.translate(cx, cy)
@@ -279,9 +347,15 @@ export class FireEngine {
       const sz = (1.4 + Math.sin(phase * 3.1) * 0.7) * (0.5 + burn * 0.6)
       const alpha = burn * (0.35 + Math.sin(phase * 2) * 0.18)
       const eg = ctx.createRadialGradient(ex, ey, 0, ex, ey, sz * 3)
-      eg.addColorStop(0, `rgba(255,220,90,${Math.min(0.9, alpha * 1.6)})`)
-      eg.addColorStop(0.5, `rgba(255,90,0,${alpha * 0.85})`)
-      eg.addColorStop(1, 'rgba(255,20,0,0)')
+      if (golden) {
+        eg.addColorStop(0, `rgba(255,255,180,${Math.min(0.95, alpha * 2)})`)
+        eg.addColorStop(0.4, `rgba(255,200,0,${alpha * 1.2})`)
+        eg.addColorStop(1, 'rgba(255,100,0,0)')
+      } else {
+        eg.addColorStop(0, `rgba(255,220,90,${Math.min(0.9, alpha * 1.6)})`)
+        eg.addColorStop(0.5, `rgba(255,90,0,${alpha * 0.85})`)
+        eg.addColorStop(1, 'rgba(255,20,0,0)')
+      }
       ctx.beginPath()
       ctx.arc(ex, ey, sz * 3, 0, Math.PI * 2)
       ctx.fillStyle = eg

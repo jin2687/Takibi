@@ -38,6 +38,11 @@
   font-size: 13px;
   background: rgba(200, 100, 20, 0.25);
   color: #f5e6c8;
+}
+
+.golden-badge {
+  color: #ffe066;
+  text-shadow: 0 0 6px rgba(255, 200, 0, 0.8);
   backdrop-filter: blur(4px);
 }
 
