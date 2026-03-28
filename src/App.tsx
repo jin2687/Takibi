@@ -10,7 +10,12 @@ const BROADCAST_INTERVAL = 100
 const LOG_LIFETIME = 180
 const COOLDOWN_MS = 60_000
 
-const FIRE_SOUNDS = ['パチパチ…', 'ぱちぱち', 'チリチリ…', 'ゆらゆら', 'ぬくぬく…', 'パッ！', 'シュ…', 'ポッ']
+// 火力別の擬音（low: <0.25 / mid: 0.25〜0.6 / high: >0.6）
+const FIRE_SOUNDS = {
+  low:  ['ゆらゆら…', 'ほのか…', 'ぬくぬく…', 'しずか…', 'ちろちろ…'],
+  mid:  ['チリチリ…', 'ポッ', 'パッ', 'しゅ…', 'ちりちり…'],
+  high: ['パチパチ！', 'バチッ！', 'ボッ！', 'パッパッ！', 'バチバチ！'],
+}
 const EMOTES = ['🔥', '❤️', '✨', '👏', '😊', '🌸']
 
 interface Bubble {
@@ -63,21 +68,25 @@ function App() {
     setTimeout(() => setBubbles(prev => prev.filter(b => b.id !== id)), 3200)
   }, [])
 
-  // Fire sound bubbles (random interval)
+  // Fire sound bubbles（頻度低め：4〜9秒ごと、火力に応じてワード変化）
   useEffect(() => {
     let tid: ReturnType<typeof setTimeout>
     const schedule = () => {
       tid = setTimeout(() => {
-        if (fireStateRef.current.intensity > 0.12) {
+        const intensity = fireStateRef.current.intensity
+        if (intensity > 0.12) {
+          const pool = intensity > 0.6 ? FIRE_SOUNDS.high
+                     : intensity > 0.25 ? FIRE_SOUNDS.mid
+                     : FIRE_SOUNDS.low
           addBubble(
-            FIRE_SOUNDS[Math.floor(Math.random() * FIRE_SOUNDS.length)],
+            pool[Math.floor(Math.random() * pool.length)],
             22 + Math.random() * 56,
             12 + Math.random() * 10,
             'sound'
           )
         }
         schedule()
-      }, 1800 + Math.random() * 2400)
+      }, 4000 + Math.random() * 5000)
     }
     schedule()
     return () => clearTimeout(tid)
