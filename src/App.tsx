@@ -6,17 +6,27 @@ import { generateRoomId, getRoomIdFromUrl, buildInviteUrl } from './p2p/roomId'
 import { InviteModal } from './components/InviteModal'
 import './App.css'
 
-const BROADCAST_INTERVAL = 100  // ms
-const LOG_LIFETIME = 180         // seconds per log
-const COOLDOWN_MS = 60_000       // 1 minute cooldown
+const BROADCAST_INTERVAL = 100
+const LOG_LIFETIME = 180
+const COOLDOWN_MS = 60_000
+
+const FIRE_SOUNDS = ['パチパチ…', 'ぱちぱち', 'チリチリ…', 'ゆらゆら', 'ぬくぬく…', 'パッ！', 'シュ…', 'ポッ']
+const EMOTES = ['🔥', '❤️', '✨', '👏', '😊', '🌸']
+
+interface Bubble {
+  id: string
+  text: string
+  x: number      // % from left within canvas-area
+  startY: number // % from bottom within canvas-area
+  type: 'sound' | 'emote'
+}
 
 function createLog(existingLogs: LogState[]): LogState {
   const activeLogs = existingLogs.filter(l => l.age < 0.85)
-  const pileLevel = activeLogs.length
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     relX: (Math.random() - 0.5) * 0.12,
-    relY: 0.006 + pileLevel * 0.024,
+    relY: 0.006 + activeLogs.length * 0.024,
     angle: (Math.random() - 0.5) * 0.5,
     age: 0,
     lifetime: LOG_LIFETIME,
@@ -29,25 +39,49 @@ function App() {
   const [hostRoomId] = useState(() => isHost ? generateRoomId() : null)
   const roomId = isHost ? hostRoomId : roomIdFromUrl
 
-  const [fireState, setFireState] = useState<FireState>({
-    intensity: 0.1,
-    elapsed: 0,
-    logs: [],
-  })
+  const [fireState, setFireState] = useState<FireState>({ intensity: 0.1, elapsed: 0, logs: [] })
   const fireStateRef = useRef<FireState>(fireState)
 
   const [showInvite, setShowInvite] = useState(false)
   const [logAnimation, setLogAnimation] = useState(false)
   const [cooldownEnd, setCooldownEnd] = useState(0)
   const [cooldownRemaining, setCooldownRemaining] = useState(0)
+  const [bubbles, setBubbles] = useState<Bubble[]>([])
 
-  // Update cooldown countdown every 100ms
+  // Cooldown countdown
   useEffect(() => {
     const id = setInterval(() => {
       setCooldownRemaining(Math.max(0, Math.ceil((cooldownEnd - Date.now()) / 1000)))
     }, 100)
     return () => clearInterval(id)
   }, [cooldownEnd])
+
+  // Add a floating bubble
+  const addBubble = useCallback((text: string, x: number, startY: number, type: Bubble['type']) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    setBubbles(prev => [...prev, { id, text, x, startY, type }])
+    setTimeout(() => setBubbles(prev => prev.filter(b => b.id !== id)), 3200)
+  }, [])
+
+  // Fire sound bubbles (random interval)
+  useEffect(() => {
+    let tid: ReturnType<typeof setTimeout>
+    const schedule = () => {
+      tid = setTimeout(() => {
+        if (fireStateRef.current.intensity > 0.12) {
+          addBubble(
+            FIRE_SOUNDS[Math.floor(Math.random() * FIRE_SOUNDS.length)],
+            22 + Math.random() * 56,
+            12 + Math.random() * 10,
+            'sound'
+          )
+        }
+        schedule()
+      }, 1800 + Math.random() * 2400)
+    }
+    schedule()
+    return () => clearTimeout(tid)
+  }, [addBubble])
 
   const triggerLogAnimation = () => {
     setLogAnimation(true)
@@ -64,14 +98,19 @@ function App() {
     triggerLogAnimation()
   }, [])
 
-  const { role, peerId, guestCount, error, broadcastState, sendAction } = usePeer({
+  const handleIncomingEmote = useCallback((emoji: string) => {
+    addBubble(emoji, 20 + Math.random() * 60, 14 + Math.random() * 12, 'emote')
+  }, [addBubble])
+
+  const { role, peerId, guestCount, error, broadcastState, broadcastEmote, sendAction } = usePeer({
     roomId: isHost ? null : roomId,
     onStateUpdate: isHost ? undefined : (state) =>
       setFireState({ ...state, logs: state.logs ?? [] }),
     onGuestAction: isHost ? handleGuestAction : undefined,
+    onEmote: handleIncomingEmote,
   })
 
-  // Host loop: age logs + derive intensity + broadcast
+  // Host loop
   useEffect(() => {
     if (!isHost) return
     let lastBroadcast = 0
@@ -86,17 +125,10 @@ function App() {
         const updatedLogs = prev.logs
           .map(log => ({ ...log, age: Math.min(1, log.age + dt / log.lifetime) }))
           .filter(log => log.age < 1)
-
-        const target = 0.05 + updatedLogs.reduce((sum, log) => {
-          return sum + Math.max(0, 1 - log.age * 1.4) * 0.32
-        }, 0)
+        const target = 0.05 + updatedLogs.reduce((sum, log) =>
+          sum + Math.max(0, 1 - log.age * 1.4) * 0.32, 0)
         const newIntensity = prev.intensity + (Math.max(0.05, Math.min(1, target)) - prev.intensity) * 0.04
-
-        const next: FireState = {
-          intensity: newIntensity,
-          elapsed: prev.elapsed + dt,
-          logs: updatedLogs,
-        }
+        const next: FireState = { intensity: newIntensity, elapsed: prev.elapsed + dt, logs: updatedLogs }
         fireStateRef.current = next
         return next
       })
@@ -115,7 +147,6 @@ function App() {
   const handleAddLog = useCallback(() => {
     if (Date.now() < cooldownEnd) return
     setCooldownEnd(Date.now() + COOLDOWN_MS)
-
     if (isHost) {
       setFireState((prev) => {
         const newLog = createLog(prev.logs)
@@ -129,7 +160,18 @@ function App() {
     triggerLogAnimation()
   }, [isHost, sendAction, cooldownEnd])
 
+  const handleEmote = useCallback((emoji: string) => {
+    // 自分の画面にすぐ表示
+    addBubble(emoji, 20 + Math.random() * 60, 14 + Math.random() * 12, 'emote')
+    if (isHost) {
+      broadcastEmote(emoji)
+    } else {
+      sendAction({ type: 'emote', emoji })
+    }
+  }, [isHost, broadcastEmote, sendAction, addBubble])
+
   const inviteUrl = roomId ? buildInviteUrl(isHost ? hostRoomId! : roomId) : ''
+  const logCount = fireState.logs.filter(l => l.age < 0.9).length
 
   const statusLabel = () => {
     if (error) return `エラー: ${error}`
@@ -138,18 +180,29 @@ function App() {
     return guestCount > 0 ? 'ホストと接続済み' : 'ホストを探しています…'
   }
 
-  const logCount = fireState.logs.filter(l => l.age < 0.9).length
-
   return (
     <div className="app">
       <div className="canvas-area">
         <FireCanvas fireState={fireState} className="fire-canvas" />
+
         <div className="room-status">
           <span className="room-badge">{statusLabel()}</span>
         </div>
         {logCount > 0 && (
           <div className="log-count-badge">🪵 ×{logCount}</div>
         )}
+
+        {/* 浮かび上がる吹き出し */}
+        {bubbles.map(b => (
+          <div
+            key={b.id}
+            className={`bubble bubble--${b.type}`}
+            style={{ left: `${b.x}%`, bottom: `${b.startY}%` }}
+          >
+            {b.text}
+          </div>
+        ))}
+
         {logAnimation && <div className="log-flash" />}
       </div>
 
@@ -168,10 +221,23 @@ function App() {
           onClick={handleAddLog}
           disabled={!peerId || cooldownRemaining > 0}
         >
-          {cooldownRemaining > 0
-            ? `くべる準備中… ${cooldownRemaining}秒`
-            : '薪をくべる 🪵'}
+          {cooldownRemaining > 0 ? `くべる準備中… ${cooldownRemaining}秒` : '薪をくべる 🪵'}
         </button>
+
+        {/* エモートボタン */}
+        <div className="emote-row">
+          {EMOTES.map(emoji => (
+            <button
+              key={emoji}
+              className="btn-emote"
+              onClick={() => handleEmote(emoji)}
+              disabled={!peerId}
+              aria-label={emoji}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
 
         <div className="action-sub">
           {isHost && (

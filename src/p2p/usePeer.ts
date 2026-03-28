@@ -5,24 +5,22 @@ import type { FireState } from '../fire/FireEngine'
 
 export type Role = 'host' | 'guest' | 'idle'
 
-export interface GuestAction {
-  type: 'addLog'
-}
+export type GuestMessage =
+  | { type: 'addLog' }
+  | { type: 'emote'; emoji: string }
 
-export interface HostBroadcast {
-  type: 'state'
-  payload: FireState
-}
-
-type IncomingMessage = GuestAction | HostBroadcast
+export type HostMessage =
+  | { type: 'state'; payload: FireState }
+  | { type: 'emote'; emoji: string }
 
 interface UsePeerOptions {
   roomId: string | null
   onStateUpdate?: (state: FireState) => void
-  onGuestAction?: (action: GuestAction, connId: string) => void
+  onGuestAction?: (action: { type: 'addLog' }, connId: string) => void
+  onEmote?: (emoji: string) => void
 }
 
-export function usePeer({ roomId, onStateUpdate, onGuestAction }: UsePeerOptions) {
+export function usePeer({ roomId, onStateUpdate, onGuestAction, onEmote }: UsePeerOptions) {
   const [role, setRole] = useState<Role>('idle')
   const [peerId, setPeerId] = useState<string | null>(null)
   const [guestCount, setGuestCount] = useState(0)
@@ -32,15 +30,17 @@ export function usePeer({ roomId, onStateUpdate, onGuestAction }: UsePeerOptions
   const connectionsRef = useRef<Map<string, DataConnection>>(new Map())
   const onStateUpdateRef = useRef(onStateUpdate)
   const onGuestActionRef = useRef(onGuestAction)
+  const onEmoteRef = useRef(onEmote)
 
   useEffect(() => { onStateUpdateRef.current = onStateUpdate }, [onStateUpdate])
   useEffect(() => { onGuestActionRef.current = onGuestAction }, [onGuestAction])
+  useEffect(() => { onEmoteRef.current = onEmote }, [onEmote])
 
   useEffect(() => {
     let peer: Peer
 
     if (roomId) {
-      // ゲストモード: roomId が URL に含まれていた場合
+      // ゲストモード
       peer = new Peer()
       peerRef.current = peer
       peer.on('open', (id) => {
@@ -48,50 +48,41 @@ export function usePeer({ roomId, onStateUpdate, onGuestAction }: UsePeerOptions
         setRole('guest')
         const conn = peer.connect(roomId)
         connectionsRef.current.set(conn.peer, conn)
-        conn.on('open', () => {
-          setGuestCount(1)
-        })
+        conn.on('open', () => setGuestCount(1))
         conn.on('data', (data) => {
-          const msg = data as IncomingMessage
-          if (msg.type === 'state') {
-            onStateUpdateRef.current?.(msg.payload)
-          }
+          const msg = data as HostMessage
+          if (msg.type === 'state') onStateUpdateRef.current?.(msg.payload)
+          else if (msg.type === 'emote') onEmoteRef.current?.(msg.emoji)
         })
-        conn.on('close', () => {
-          connectionsRef.current.delete(conn.peer)
-          setGuestCount(0)
-        })
-        conn.on('error', (err) => {
-          setError(`接続エラー: ${err.message}`)
-        })
+        conn.on('close', () => { connectionsRef.current.delete(conn.peer); setGuestCount(0) })
+        conn.on('error', (err) => setError(`接続エラー: ${err.message}`))
       })
     } else {
-      // ホストモード: roomId が URL にない場合
+      // ホストモード
       peer = new Peer()
       peerRef.current = peer
-      peer.on('open', (id) => {
-        setPeerId(id)
-        setRole('host')
-      })
+      peer.on('open', (id) => { setPeerId(id); setRole('host') })
       peer.on('connection', (conn) => {
         connectionsRef.current.set(conn.peer, conn)
         setGuestCount(connectionsRef.current.size)
         conn.on('data', (data) => {
-          const msg = data as IncomingMessage
+          const msg = data as GuestMessage
           if (msg.type === 'addLog') {
-            onGuestActionRef.current?.(msg, conn.peer)
+            onGuestActionRef.current?.({ type: 'addLog' }, conn.peer)
+          } else if (msg.type === 'emote') {
+            // ホスト画面にも表示
+            onEmoteRef.current?.(msg.emoji)
+            // 送信元以外の全ゲストへ中継
+            for (const [id, c] of connectionsRef.current) {
+              if (id !== conn.peer && c.open) c.send({ type: 'emote', emoji: msg.emoji } as HostMessage)
+            }
           }
         })
-        conn.on('close', () => {
-          connectionsRef.current.delete(conn.peer)
-          setGuestCount(connectionsRef.current.size)
-        })
+        conn.on('close', () => { connectionsRef.current.delete(conn.peer); setGuestCount(connectionsRef.current.size) })
       })
     }
 
-    peer.on('error', (err) => {
-      setError(`PeerJSエラー: ${err.message}`)
-    })
+    peer.on('error', (err) => setError(`PeerJSエラー: ${err.message}`))
 
     return () => {
       peer.destroy()
@@ -101,18 +92,26 @@ export function usePeer({ roomId, onStateUpdate, onGuestAction }: UsePeerOptions
 
   /** ホスト → 全ゲストへ状態配信 */
   const broadcastState = useCallback((state: FireState) => {
-    const msg: HostBroadcast = { type: 'state', payload: state }
+    const msg: HostMessage = { type: 'state', payload: state }
     for (const conn of connectionsRef.current.values()) {
       if (conn.open) conn.send(msg)
     }
   }, [])
 
-  /** ゲスト → ホストへアクション送信 */
-  const sendAction = useCallback((action: GuestAction) => {
+  /** ホスト → 全ゲストへエモート配信 */
+  const broadcastEmote = useCallback((emoji: string) => {
+    const msg: HostMessage = { type: 'emote', emoji }
+    for (const conn of connectionsRef.current.values()) {
+      if (conn.open) conn.send(msg)
+    }
+  }, [])
+
+  /** ゲスト → ホストへメッセージ送信 */
+  const sendAction = useCallback((action: GuestMessage) => {
     for (const conn of connectionsRef.current.values()) {
       if (conn.open) conn.send(action)
     }
   }, [])
 
-  return { role, peerId, guestCount, error, broadcastState, sendAction }
+  return { role, peerId, guestCount, error, broadcastState, broadcastEmote, sendAction }
 }
