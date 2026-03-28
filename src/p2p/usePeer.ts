@@ -39,9 +39,19 @@ export function usePeer({ roomId, onStateUpdate, onGuestAction, onEmote }: UsePe
   useEffect(() => {
     let peer: Peer
 
+    const peerOptions = {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+        ],
+      },
+    }
+
     if (roomId) {
       // ゲストモード
-      peer = new Peer()
+      peer = new Peer(peerOptions)
       peerRef.current = peer
       peer.on('open', (id) => {
         setPeerId(id)
@@ -59,7 +69,7 @@ export function usePeer({ roomId, onStateUpdate, onGuestAction, onEmote }: UsePe
       })
     } else {
       // ホストモード
-      peer = new Peer()
+      peer = new Peer(peerOptions)
       peerRef.current = peer
       peer.on('open', (id) => { setPeerId(id); setRole('host') })
       peer.on('connection', (conn) => {

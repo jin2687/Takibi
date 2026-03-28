@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { FireCanvas } from './fire/FireCanvas'
 import type { FireState, LogState } from './fire/FireEngine'
 import { usePeer } from './p2p/usePeer'
-import { generateRoomId, getRoomIdFromUrl, buildInviteUrl } from './p2p/roomId'
+import { getRoomIdFromUrl, buildInviteUrl } from './p2p/roomId'
 import { InviteModal } from './components/InviteModal'
 import './App.css'
 
@@ -41,8 +41,7 @@ function createLog(existingLogs: LogState[]): LogState {
 function App() {
   const roomIdFromUrl = getRoomIdFromUrl()
   const isHost = roomIdFromUrl === null
-  const [hostRoomId] = useState(() => isHost ? generateRoomId() : null)
-  const roomId = isHost ? hostRoomId : roomIdFromUrl
+  const roomId = roomIdFromUrl
 
   const [fireState, setFireState] = useState<FireState>({ intensity: 0.1, elapsed: 0, logs: [] })
   const fireStateRef = useRef<FireState>(fireState)
@@ -179,7 +178,7 @@ function App() {
     }
   }, [isHost, broadcastEmote, sendAction, addBubble])
 
-  const inviteUrl = roomId ? buildInviteUrl(isHost ? hostRoomId! : roomId) : ''
+  const inviteUrl = peerId && isHost ? buildInviteUrl(peerId) : ''
   const logCount = fireState.logs.filter(l => l.age < 0.9).length
 
   const statusLabel = () => {
