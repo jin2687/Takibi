@@ -10,7 +10,7 @@ const BROADCAST_INTERVAL = 100
 const LOG_LIFETIME = 180
 const GOLDEN_LIFETIME = 300  // golden logs burn longer
 const COOLDOWN_MS = 60_000
-const MAX_LOGS = 15
+const MAX_LOGS = 20
 const LOG_SLOT_H = 0.024  // relY per slot
 
 // 火力別の擬音（low: <0.25 / mid: 0.25〜0.6 / high: >0.6）
