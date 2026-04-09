@@ -1,3 +1,6 @@
+import type { UpgradeLevels } from '../game/economy'
+export type { UpgradeLevels }
+
 export interface LogState {
   id: string
   relX: number     // fraction of canvas width from center
@@ -12,6 +15,12 @@ export interface FireState {
   intensity: number
   elapsed: number
   logs: LogState[]
+  // economy
+  embers: number
+  totalEmbers: number
+  upgrades: UpgradeLevels
+  coopBonusMult: number   // 1 or 2
+  coopBonusEnd: number    // Date.now() ms
 }
 
 interface Particle {
@@ -36,7 +45,12 @@ export class FireEngine {
   private emitAccum = 0
   private fallingLogs = new Map<string, FallingLog>()
   private seenLogIds = new Set<string>()
-  private cur: FireState = { intensity: 0.1, elapsed: 0, logs: [] }
+  private cur: FireState = {
+    intensity: 0.1, elapsed: 0, logs: [],
+    embers: 0, totalEmbers: 0,
+    upgrades: { woodSplitter: 0, herbBundle: 0, pineResin: 0, stoneCircle: 0, goldenBell: 0, firePit: 0, fireAlchemy: 0 },
+    coopBonusMult: 1, coopBonusEnd: 0,
+  }
 
   update(dt: number, state: FireState, w: number, h: number) {
     this.cur = state
@@ -171,21 +185,45 @@ export class FireEngine {
     })
   }
 
-  draw(ctx: CanvasRenderingContext2D, w: number, h: number) {
+  draw(ctx: CanvasRenderingContext2D, w: number, h: number, era = 1) {
     ctx.clearRect(0, 0, w, h)
     const state = this.cur
     const bx = w / 2
     const by = h * FIRE_BASE_Y
 
-    // Ground glow
-    const gr = ctx.createRadialGradient(bx, by, 0, bx, by, w * 0.38)
+    // Era 5: rainbow vignette background pulse
+    if (era >= 5) {
+      const hue = (state.elapsed * 30) % 360
+      const vg = ctx.createRadialGradient(bx, by, 0, bx, by, w * 0.7)
+      vg.addColorStop(0, `hsla(${hue},80%,60%,0.12)`)
+      vg.addColorStop(1, 'rgba(0,0,0,0)')
+      ctx.fillStyle = vg
+      ctx.fillRect(0, 0, w, h)
+    }
+
+    // Ground glow — grows with era
+    const glowR = w * (0.38 + (era - 1) * 0.06)
+    const gr = ctx.createRadialGradient(bx, by, 0, bx, by, glowR)
     const ga = 0.22 + state.intensity * 0.32
-    gr.addColorStop(0, `rgba(255,80,0,${ga})`)
-    gr.addColorStop(0.55, `rgba(200,40,0,${ga * 0.35})`)
+    if (era <= 2) {
+      gr.addColorStop(0, `rgba(255,80,0,${ga})`)
+      gr.addColorStop(0.55, `rgba(200,40,0,${ga * 0.35})`)
+    } else if (era === 3) {
+      gr.addColorStop(0, `rgba(255,180,0,${ga})`)
+      gr.addColorStop(0.55, `rgba(255,80,0,${ga * 0.4})`)
+    } else if (era === 4) {
+      gr.addColorStop(0, `rgba(120,160,255,${ga})`)
+      gr.addColorStop(0.4, `rgba(255,80,200,${ga * 0.5})`)
+      gr.addColorStop(0.8, `rgba(80,0,120,${ga * 0.2})`)
+    } else {
+      const hue2 = (state.elapsed * 40) % 360
+      gr.addColorStop(0, `hsla(${hue2},100%,80%,${ga * 1.2})`)
+      gr.addColorStop(0.5, `hsla(${(hue2 + 120) % 360},100%,60%,${ga * 0.4})`)
+    }
     gr.addColorStop(1, 'rgba(0,0,0,0)')
     ctx.fillStyle = gr
     ctx.beginPath()
-    ctx.ellipse(bx, by, w * 0.38, h * 0.065, 0, 0, Math.PI * 2)
+    ctx.ellipse(bx, by, glowR, h * 0.065, 0, 0, Math.PI * 2)
     ctx.fill()
 
     // Log bodies (back→front)
@@ -207,6 +245,21 @@ export class FireEngine {
         rr = 255
         gg = Math.round(220 * Math.max(0, 1 - t * 0.9))
         bb = Math.round(80 * Math.max(0, 1 - t * 2.5))
+      } else if (era === 4) {
+        // 業火: blue/violet tones
+        rr = Math.round(120 + 135 * Math.max(0, 1 - t * 1.2))
+        gg = Math.round(80 * Math.max(0, 1 - t * 2))
+        bb = Math.round(255 * Math.max(0, 1 - t * 0.8))
+      } else if (era >= 5) {
+        // 神の炎: rainbow
+        const hue = ((state.elapsed * 60 + t * 120) % 360)
+        const [r2, g2, b2] = hslToRgb(hue / 360, 1, 0.7)
+        rr = r2; gg = g2; bb = b2
+      } else if (era === 3) {
+        // 大焚き火: more yellow
+        rr = 255
+        gg = Math.round(255 * Math.max(0, 1 - t * 1.1))
+        bb = Math.round(60 * Math.max(0, 1 - t * 3))
       } else {
         rr = 255
         gg = Math.round(255 * Math.max(0, 1 - t * 1.7))
@@ -363,4 +416,13 @@ export class FireEngine {
     }
     ctx.restore()
   }
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const a = s * Math.min(l, 1 - l)
+  const f = (n: number) => {
+    const k = (n + h * 12) % 12
+    return Math.round((l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))) * 255)
+  }
+  return [f(0), f(8), f(4)]
 }

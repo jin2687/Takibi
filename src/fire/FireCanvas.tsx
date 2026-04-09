@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { FireEngine } from './FireEngine'
 import type { FireState } from './FireEngine'
+import { calcEra } from '../game/economy'
 
 interface Props {
   fireState: FireState
@@ -46,7 +47,7 @@ export function FireCanvas({ fireState, onFrame, className }: Props) {
       const logicalH = canvas.offsetHeight
 
       engine.update(dt, stateRef.current, logicalW, logicalH)
-      engine.draw(ctx, logicalW, logicalH)
+      engine.draw(ctx, logicalW, logicalH, calcEra(stateRef.current.totalEmbers))
 
       onFrame?.(stateRef.current)
       rafRef.current = requestAnimationFrame(tick)

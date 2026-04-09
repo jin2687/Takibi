@@ -8,6 +8,7 @@ export type Role = 'host' | 'guest' | 'idle'
 export type GuestMessage =
   | { type: 'addLog' }
   | { type: 'emote'; emoji: string }
+  | { type: 'buyUpgrade'; upgradeId: string }
 
 export type HostMessage =
   | { type: 'state'; payload: FireState }
@@ -16,7 +17,7 @@ export type HostMessage =
 interface UsePeerOptions {
   roomId: string | null
   onStateUpdate?: (state: FireState) => void
-  onGuestAction?: (action: { type: 'addLog' }, connId: string) => void
+  onGuestAction?: (action: { type: 'addLog' } | { type: 'buyUpgrade'; upgradeId: string }, connId: string) => void
   onEmote?: (emoji: string) => void
 }
 
@@ -79,6 +80,8 @@ export function usePeer({ roomId, onStateUpdate, onGuestAction, onEmote }: UsePe
           const msg = data as GuestMessage
           if (msg.type === 'addLog') {
             onGuestActionRef.current?.({ type: 'addLog' }, conn.peer)
+          } else if (msg.type === 'buyUpgrade') {
+            onGuestActionRef.current?.({ type: 'buyUpgrade', upgradeId: msg.upgradeId }, conn.peer)
           } else if (msg.type === 'emote') {
             // ホスト画面にも表示
             onEmoteRef.current?.(msg.emoji)
